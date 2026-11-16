@@ -1,0 +1,11 @@
+# 敏感/大文件（可再生或私密，不入库）
+data_new/llm_key.txt
+data_new/models/
+data_new/43v3_features*.csv
+data_new/43v4_features*.csv
+data_new/43v4nb_features*.csv
+data_new/out/_bootstrap.log
+bond_show/data/
+__pycache__/
+*.pyc
+*.log
