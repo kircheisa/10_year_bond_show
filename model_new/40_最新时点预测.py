@@ -262,7 +262,7 @@ def make_html(asof, ymode: str, sig: pd.DataFrame, y: pd.Series,
     def line(pts, color, w=1.6, dash=""):
         pts = " ".join(f"{a:.1f},{b:.1f}" for a, b in pts)
         return (f'<polyline points="{pts}" fill="none" stroke="{color}" '
-                f'stroke-width="{w}" {f"stroke-dasharray={dash}" if dash else ""}/>')
+                f'stroke-width="{w}" {f"stroke-dasharray=" + chr(34) + dash + chr(34) if dash else ""}/>')
 
     y26 = y[y.index >= "2026-01-01"]
     W, H1, H2 = 1130, 300, 300
@@ -293,13 +293,14 @@ def make_html(asof, ymode: str, sig: pd.DataFrame, y: pd.Series,
     # 前向隐含点位：发出日->各到期日的虚线射线 + 端点标注
     y_now = y[asof]
     sig = sig.sort_values("到期日")          # 表格与射线按到期日递增
-    for _, r in sig.iterrows():
+    for gi, (_, r) in enumerate(sig.iterrows()):   # gi 用于标签错行
         c = COLORS[r["周期"]]
         xe, ye = xmap(pd.Timestamp(r["到期日"])), y1(r["隐含点位估算(%)"])
+        dy = gi * 14                                  # 每周期标签下移14px防重叠
         svg.append(line([(xmap(asof), y1(y_now)), (xe, ye)], c, 1.4, "6,4"))
         svg.append(f'<circle cx="{xe:.0f}" cy="{ye:.0f}" r="4.5" fill="{c}" '
                    f'stroke="white" stroke-width="1.2"/>')
-        svg.append(f'<text x="{xe - 4:.0f}" y="{ye + 18:.0f}" fill="{c}" '
+        svg.append(f'<text x="{xe - 4:.0f}" y="{ye + 18 + dy:.0f}" fill="{c}" '
                    f'font-size="11" font-weight="bold">'
                    f'{r["周期"]}→{r["隐含点位估算(%)"]:.3f}</text>')
         # 融合隐含点位：空心菱形 + 细虚线
@@ -308,7 +309,7 @@ def make_html(asof, ymode: str, sig: pd.DataFrame, y: pd.Series,
             svg.append(line([(xmap(asof), y1(y_now)), (xe, yf)], c, 1.0, "2,4"))
             svg.append(f'<path d="M{xe:.0f},{yf - 6:.0f} l5,6 -5,6 -5,-6 z" '
                        f'fill="white" stroke="{c}" stroke-width="1.6"/>')
-            svg.append(f'<text x="{xe + 8:.0f}" y="{yf + 4:.0f}" fill="{c}" '
+            svg.append(f'<text x="{xe + 8:.0f}" y="{yf + 4 + dy:.0f}" fill="{c}" '
                        f'font-size="10">融{r["融合隐含点位(%)"]:.3f}</text>')
         # LLM修正隐含点位：×标记
         if pd.notna(r.get("修正隐含点位(%)")):
@@ -316,7 +317,7 @@ def make_html(asof, ymode: str, sig: pd.DataFrame, y: pd.Series,
             svg.append(f'<path d="M{xe - 6:.0f},{yc - 6:.0f} l12,12 '
                        f'm0,-12 l-12,12" stroke="{c}" stroke-width="2.4" '
                        f'fill="none"/>')
-            svg.append(f'<text x="{xe - 4:.0f}" y="{yc - 12:.0f}" fill="{c}" '
+            svg.append(f'<text x="{xe - 4:.0f}" y="{yc - 12 + dy:.0f}" fill="{c}" '
                        f'font-size="10" font-weight="bold">修'
                        f'{r["修正隐含点位(%)"]:.3f}</text>')
     svg.append(f'<circle cx="{xmap(asof):.0f}" cy="{y1(y_now):.0f}" r="4" '
