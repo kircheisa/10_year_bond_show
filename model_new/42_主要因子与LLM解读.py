@@ -418,6 +418,17 @@ def main() -> None:
     html_path.write_text(html, encoding="utf-8")
     print(f"HTML已注入因子与解读: {html_path}")
 
+    # ---- 同步导出 PDF 版本（43 脚本；失败不影响 HTML） ----
+    try:
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            "m43", BASE / "model_new" / "43_导出PDF.py")
+        m43 = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(m43)
+        print(f"PDF已导出: {m43.export_pdf(html_path)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [PDF导出失败，不影响HTML] {exc}")
+
 
 if __name__ == "__main__":
     main()
