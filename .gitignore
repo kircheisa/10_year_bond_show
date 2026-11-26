@@ -9,3 +9,5 @@ bond_show/data/
 __pycache__/
 *.pyc
 *.log
+# Excel 打开工作簿时生成的临时锁文件
+~$*
