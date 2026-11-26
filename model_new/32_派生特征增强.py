@@ -18,6 +18,10 @@
                   利率×美元/铜/标普滚动相关 + corr_break_dollar(旧库Top1)
   F12 趋势回归:    trailing OLS 斜率/R²/偏离z（43v2 Top35占5席的lr__族）
   F13 日历:        距月末/季末天数、月末/季末临近哑变量（旧库Top2）
+  F14 DR001传导链: 政策锚→DR001→套息空间→长端，五个互补维度——
+                  ①套息利差(国债-资金中枢20日均值)及一年分位数 ②DR001相对政策锚
+                  的偏离/趋势/连续天数 ③交易所与银行间隔夜利差(资金分层，GC001代理)
+                  ④DR001已实现波动率及突变 ⑤央行逆回购操作量/频率/估算净投放
 
 输入: data_ori/2026_ori_data_new.xlsx + data_new/43v3_features.csv（复用其
 z 列做机构合成，避免重复计算；网格 index 与 43v3 完全一致）
@@ -47,19 +51,38 @@ Z_WIN, Z_MIN = 252, 120
 
 
 # ---------- 与 30 脚本一致的装载 ----------
+def dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """重复列名保留非零有效值最多的一列；无指标名的列(nan)整列丢弃。
+    新版 Wind 导出会出现 同名列新旧并存(如市净率旧列止于2022) 与 无名列。
+    必须在加 #编号 后缀之前调用，否则新旧两列会被后缀拆成两个名字都保留。"""
+    unnamed = [c for c in df.columns if isinstance(c, str) and c == "nan"]
+    df = df.drop(columns=unnamed)
+    keep = []
+    for name in dict.fromkeys(df.columns):          # 按首次出现顺序去重
+        same = [c for c in df.columns if c == name]
+        if len(same) == 1:
+            keep.append(name)
+            continue
+        best = max(same, key=lambda c: int((df[c] != 0).sum()))
+        keep.append(best)
+    return df[keep]
+
+
 def load_sheet(xl: pd.ExcelFile, sheet: str) -> pd.DataFrame:
+    """定位'指标名称'行，返回数值矩阵（index=日期升序）"""
     raw = xl.parse(sheet, header=None)
     hi = raw.index[raw[0] == "指标名称"][0]
     names = list(raw.iloc[hi, 1:])
-    for i, n in enumerate(names):
+    for i, n in enumerate(names):              # 重复指标名加编号
         if names[: i + 1].count(n) > 1:
             names[i] = f"{n}#{i}"
     df = raw.iloc[hi + 1:].copy()
     df.columns = ["date"] + names
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date").set_index("date").apply(
-        pd.to_numeric, errors="coerce")
-
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])          # 新导出的分组/空日期分隔行
+    df = df.sort_values("date").set_index("date")
+    df = df.apply(pd.to_numeric, errors="coerce")
+    return dedupe_columns(df)
 
 def drop_exact_dups(d: pd.DataFrame) -> pd.DataFrame:
     return d.loc[:, ~d.T.duplicated()]
@@ -106,6 +129,38 @@ def trailing_ols(s: pd.Series, win: int) -> tuple[pd.Series, pd.Series, pd.Serie
     idx = s.index[win - 1:]
     return (pd.Series(out[:, 0], idx), pd.Series(out[:, 1], idx),
             pd.Series(out[:, 2], idx))
+
+
+# ---------- F14 参数 ----------
+ON_QTY_COL = "中国:逆回购数量:隔夜"       # 隔夜逆回购操作量（只在日频表里）
+ON_RATE_COL = "中国:逆回购利率:隔夜"      # 数据表目前没有这一列；补充后自动优先使用
+OVERNIGHT_OMO_RATE = 1.25                 # 隔夜逆回购操作利率(%)，按业务口径设定，遇调整需更新
+OMO_LAG = {"隔夜": 1, "7天": 5, "14天": 10, "21天": 15, "28天": 20}   # 期限 -> 到期所需交易日数
+
+
+def policy_anchor(plain: pd.DataFrame,
+                  grid: pd.DatetimeIndex) -> pd.Series | None:
+    """政策锚利率：隔夜逆回购成为日常工具之前取7天逆回购利率，之后取隔夜逆回购利率。
+    政策利率是阶梯函数，对齐到交易日网格后无限前向填充。"""
+    if ON_RATE_COL in plain.columns:
+        a = plain[ON_RATE_COL].mask(plain[ON_RATE_COL] == 0).dropna()
+        return a.reindex(grid).ffill() if len(a) else None
+    r7 = plain.get("中国:逆回购利率:7天")
+    if r7 is None:
+        return None
+    a = r7.mask(r7 == 0).copy()
+    if ON_QTY_COL in plain.columns:
+        on = plain[ON_QTY_COL].mask(plain[ON_QTY_COL] == 0).dropna()
+        if len(on):
+            a.loc[a.index >= on.index.min()] = OVERNIGHT_OMO_RATE
+    return a.reindex(grid).ffill()
+
+
+def signed_streak(s: pd.Series) -> pd.Series:
+    """连续同向天数：连续n天为正记+n，连续n天为负记-n，缺失记0"""
+    sign = np.sign(s).fillna(0.0)
+    run = (sign != sign.shift()).cumsum()
+    return sign * sign.abs().groupby(run).cumsum()
 
 
 def main() -> None:
@@ -240,6 +295,71 @@ def main() -> None:
     days_to_qe = (q_end - grid).days.astype(float)
     feat["日历__距季末天数"] = days_to_qe
     feat["日历__季末3日内"] = (days_to_qe <= 2).astype(int)
+
+    # ---- F14 DR001传导链（政策锚→DR001→负债/杠杆成本→短端→套息空间→长端）----
+    # 五个互补维度，全部 trailing 窗口。资金中枢用20日均值而非HP滤波：
+    # HP滤波是双边平滑，会带入未来信息。
+    dr001 = C.get("DR001")
+    if dr001 is not None:
+        hub = dr001.rolling(20, 10).mean()
+        feat["传导__dr001_ma20"] = hub
+        feat["传导__dr001_chg5"] = dr001.diff(5)
+        # 维度1 估值保护：套息利差=国债收益率-资金中枢。保留符号（1年常为负），附一年分位数
+        for tenor, yn in [("1年", y1), ("5年", y5), ("10年", y10)]:
+            if yn is not None:
+                cs = yn - hub
+                feat[f"传导__carry_{tenor}"] = cs
+                feat[f"传导__carry_{tenor}_pct250"] = cs.rolling(
+                    250, 120).rank(pct=True)
+        # 维度2 政策态度：DR001相对政策锚的偏离。水平、趋势、连续同向天数
+        anchor = policy_anchor(plain, grid)
+        if anchor is not None:
+            dev = dr001 - anchor
+            feat["传导__dev_anchor"] = dev
+            put("传导__dev_anchor", dev,
+                extra=[("ma5", dev.rolling(5, 3).mean()),
+                       ("chg5", dev.diff(5)), ("chg10", dev.diff(10)),
+                       ("streak", signed_streak(dev))])
+        # 维度3 传导摩擦：交易所与银行间隔夜利差。数据表没有R001利率，用GC001作非银成本代理
+        if "GC001:收盘价" in C:
+            tier = C["GC001:收盘价"] - dr001
+            feat["传导__tier_gc"] = tier
+            put("传导__tier_gc", tier,
+                extra=[("ma5", tier.rolling(5, 3).mean())])
+        # 维度4 套息确定性：DR001已实现波动率、一年分位数、短长比（突变）
+        dchg = dr001.diff()
+        dvol20 = dchg.rolling(20, 10).std()
+        feat["传导__dr001_vol20"] = dvol20
+        feat["传导__dr001_vol20_pct250"] = dvol20.rolling(250, 120).rank(pct=True)
+        feat["传导__dr001_vol20_ratio"] = dvol20 / dchg.rolling(
+            60, 30).std().clip(lower=1e-9)
+    # 维度5 央行即时操作。操作量只在日频表里，且0=当日无操作，取原始值不做0->NaN
+    qty = {c: plain[c] for c in plain.columns if "逆回购数量:" in c}
+    if qty:
+        omo = pd.DataFrame(qty).reindex(grid).fillna(0.0)
+        total = omo.sum(axis=1)
+        # 净投放=操作量-到期量。表里没有到期量，按期限顺延估算（隔夜次日到期、
+        # 7天≈5个交易日、14天≈10个…），长假前后会有误差，所以命名带 est
+        net = pd.Series(0.0, index=grid)
+        for c in omo.columns:
+            lag = OMO_LAG.get(c.split(":")[-1])
+            if lag:
+                net = net + (omo[c] - omo[c].shift(lag))
+        gross5 = total.rolling(5, 1).sum()
+        feat["传导__omo_gross_5d"] = gross5
+        feat["传导__omo_gross_20d"] = total.rolling(20, 1).sum()
+        feat["传导__omo_freq_5d"] = (total > 0).rolling(5, 1).sum()
+        feat["传导__omo_freq_20d"] = (total > 0).rolling(20, 1).sum()
+        feat["传导__omo_net_est"] = net
+        feat["传导__omo_net_est_5d"] = net.rolling(5, 1).sum()
+        feat["传导__omo_net_est_20d"] = net.rolling(20, 1).sum()
+        if ON_QTY_COL in omo.columns:
+            feat["传导__omo_隔夜占比_5d"] = (
+                omo[ON_QTY_COL].rolling(5, 1).sum()
+                / gross5.where(gross5 > 0))
+        first_op = total.index[total > 0].min()
+        notes.append(f"F14传导族：央行操作量取日频表{len(qty)}个期限列"
+                     + (f"（{first_op.date()}起有操作）" if pd.notna(first_op) else ""))
 
     # ---- 合并输出 ----
     new_cols = [c for c in feat.columns if c not in base.columns]

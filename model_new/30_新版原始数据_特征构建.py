@@ -77,6 +77,40 @@ FINANCE_COLS = ["中国:债券净融资额:城投债", "中国:净融资:地方�
 FLOW_COLS = NETBUY_COLS + FINANCE_COLS
 
 
+def dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """重复列名保留非零有效值最多的一列；无指标名的列(nan)整列丢弃。
+    新版 Wind 导出会出现 同名列新旧并存(如市净率旧列止于2022) 与 无名列。"""
+    keep = []
+    for name in df.columns:
+        same = [c for c in df.columns if c == name]
+        if len(same) == 1:
+            keep.append(name)
+            continue
+        best = max(same, key=lambda c: int((df[c] != 0).sum()))
+        if best not in keep:
+            keep.append(best)
+    df = df[keep]
+    return df.loc[:, [c for c in df.columns
+                      if not (isinstance(c, str) and c == "nan")]]
+
+
+def dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """重复列名保留非零有效值最多的一列；无指标名的列(nan)整列丢弃。
+    新版 Wind 导出会出现 同名列新旧并存(如市净率旧列止于2022) 与 无名列。
+    必须在加 #编号 后缀之前调用，否则新旧两列会被后缀拆成两个名字都保留。"""
+    unnamed = [c for c in df.columns if isinstance(c, str) and c == "nan"]
+    df = df.drop(columns=unnamed)
+    keep = []
+    for name in dict.fromkeys(df.columns):          # 按首次出现顺序去重
+        same = [c for c in df.columns if c == name]
+        if len(same) == 1:
+            keep.append(name)
+            continue
+        best = max(same, key=lambda c: int((df[c] != 0).sum()))
+        keep.append(best)
+    return df[keep]
+
+
 def load_sheet(xl: pd.ExcelFile, sheet: str) -> pd.DataFrame:
     """定位'指标名称'行，返回数值矩阵（index=日期升序）"""
     raw = xl.parse(sheet, header=None)
@@ -87,10 +121,11 @@ def load_sheet(xl: pd.ExcelFile, sheet: str) -> pd.DataFrame:
             names[i] = f"{n}#{i}"
     df = raw.iloc[hi + 1:].copy()
     df.columns = ["date"] + names
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])          # 新导出的分组/空日期分隔行
     df = df.sort_values("date").set_index("date")
-    return df.apply(pd.to_numeric, errors="coerce")
-
+    df = df.apply(pd.to_numeric, errors="coerce")
+    return dedupe_columns(df)
 
 def drop_exact_dups(d: pd.DataFrame) -> pd.DataFrame:
     """值完全相同的重复列，仅保留首列（比 #编号 保留重复更干净）"""

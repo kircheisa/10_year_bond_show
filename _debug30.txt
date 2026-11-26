@@ -1,0 +1,7 @@
+behavior: (6154, 79), 列重复=0, 索引重复=0
+plain:    (6180, 73), 列重复=0, 索引重复=5
+combined: (6180, 79), 列重复=0, 索引重复=5
+zero_to_nan: (6180, 78), 列重复=0, 索引重复=5, 死列=0
+grid: 4103, 重复=0
+reindex 失败: cannot reindex on an axis with duplicate labels
+  重复列: []
